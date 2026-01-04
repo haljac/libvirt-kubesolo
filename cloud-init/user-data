@@ -1,0 +1,16 @@
+#cloud-config
+users:
+  - name: alpine
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/ash
+    lock_passwd: false
+    plain_text_passwd: alpine
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKSnzlkggGFkeYN+xVQLid/EXalZXg3mV93YRs5kCGl2 jackvincenthall@gmail.com
+
+ssh_pwauth: true
+
+package_update: true
+packages:
+  - curl
+  - openssh

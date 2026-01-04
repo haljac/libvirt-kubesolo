@@ -1,0 +1,21 @@
+# Downloaded images and ISOs
+alpine/images/*.qcow2
+alpine/iso/*.iso
+
+# Generated cloud-init ISO
+cloud-init/cidata.iso
+
+# Libvirt generates these
+*.log
+*.pid
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
