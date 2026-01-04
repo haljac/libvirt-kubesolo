@@ -71,6 +71,16 @@ help:
 	@echo "  make console    - Attach to VM serial console"
 	@echo "  make info       - Show detailed VM information"
 	@echo ""
+	@echo "Kubesolo Management:"
+	@echo "  make kubesolo-install       - Install Kubesolo in VM"
+	@echo "  make kubesolo-status        - Check Kubesolo service status"
+	@echo "  make kubesolo-restart       - Restart Kubesolo service"
+	@echo "  make kubesolo-version       - Show installed Kubesolo version"
+	@echo "  make kubesolo-check-updates - Check for new Kubesolo releases"
+	@echo "  make kubesolo-upgrade       - Upgrade Kubesolo to VERSION file release"
+	@echo "  make kubeconfig             - Copy kubeconfig to host (~/.kube/kubesolo)"
+	@echo "  make kubectl ARGS='..'      - Run kubectl inside VM"
+	@echo ""
 	@echo "Setup & Downloads:"
 	@echo "  make setup      - Configure host for libvirt"
 	@echo "  make download   - Download Alpine cloud image"
@@ -258,22 +268,143 @@ logs:
 # =============================================================================
 # Kubesolo Management
 # =============================================================================
-.PHONY: kubesolo-status kubesolo-restart kubectl
+.PHONY: kubesolo-install kubesolo-status kubesolo-restart kubesolo-version kubesolo-check-updates kubesolo-upgrade kubesolo-wait kubectl kubeconfig
+
+# Kubesolo configuration
+KUBESOLO_RELEASE    ?= v1.1.0
+KUBESOLO_BINARY_URL := https://github.com/portainer/kubesolo/releases/download/$(KUBESOLO_RELEASE)/kubesolo-$(KUBESOLO_RELEASE)-linux-amd64-musl.tar.gz
+KUBECONFIG_VM_PATH  := /var/lib/kubesolo/pki/admin/admin.kubeconfig
+KUBECONFIG_HOST_PATH := $(HOME)/.kube/kubesolo
+
+kubesolo-install:
+	@echo "Installing Kubesolo $(KUBESOLO_RELEASE) in VM..."
+	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
+	if [ -z "$$IP" ]; then \
+		echo "ERROR: Could not determine VM IP. Is the VM running?"; \
+		exit 1; \
+	fi; \
+	echo "Downloading Kubesolo binary..."; \
+	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
+		"cd /tmp && curl -sfL '$(KUBESOLO_BINARY_URL)' -o kubesolo.tar.gz && \
+		 tar -xzf kubesolo.tar.gz && \
+		 doas mv kubesolo /usr/local/bin/ && \
+		 doas chmod +x /usr/local/bin/kubesolo && \
+		 rm -f kubesolo.tar.gz && \
+		 echo 'Binary installed to /usr/local/bin/kubesolo'"; \
+	echo "Ensuring cgroups are enabled..."; \
+	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
+		"doas rc-update add cgroups boot 2>/dev/null; doas rc-service cgroups start 2>/dev/null || true"; \
+	echo "Creating OpenRC service..."; \
+	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
+		'echo "#!/sbin/openrc-run" | doas tee /etc/init.d/kubesolo > /dev/null && \
+		 echo "" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "name=\"kubesolo\"" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "description=\"KubeSolo - Ultra-lightweight Kubernetes\"" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "command=\"/usr/local/bin/kubesolo\"" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "command_background=\"yes\"" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "pidfile=\"/run/\$${RC_SVCNAME}.pid\"" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "output_log=\"/var/log/kubesolo.log\"" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "error_log=\"/var/log/kubesolo.err\"" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "depend() {" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "    need net" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "    after firewall" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "}" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "start_pre() {" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "    checkpath --directory --owner root:root --mode 0755 /var/lib/kubesolo" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 echo "}" | doas tee -a /etc/init.d/kubesolo > /dev/null && \
+		 doas chmod +x /etc/init.d/kubesolo && \
+		 doas rc-update add kubesolo default && \
+		 doas rc-service kubesolo start && \
+		 echo "Kubesolo service started"'
+	@echo ""
+	@echo "Waiting for Kubesolo to initialize..."
+	@$(MAKE) kubesolo-wait
+
+kubesolo-wait:
+	@echo "Waiting for Kubesolo to be ready (this may take 1-2 minutes)..."
+	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
+	for i in $$(seq 1 60); do \
+		if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
+			"test -f $(KUBECONFIG_VM_PATH)" 2>/dev/null; then \
+			echo "Kubesolo is ready!"; \
+			exit 0; \
+		fi; \
+		echo "  Waiting... ($$i/60)"; \
+		sleep 5; \
+	done; \
+	echo "ERROR: Timeout waiting for Kubesolo to be ready"; \
+	exit 1
 
 kubesolo-status:
 	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
 	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
-		"rc-service kubesolo status 2>/dev/null || systemctl status kubesolo 2>/dev/null || echo 'Kubesolo not installed'"
+		"doas rc-service kubesolo status 2>/dev/null || echo 'Kubesolo not installed'"
 
 kubesolo-restart:
 	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
 	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
-		"sudo rc-service kubesolo restart 2>/dev/null || sudo systemctl restart kubesolo"
+		"doas rc-service kubesolo restart"
+
+kubesolo-version:
+	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
+	if [ -z "$$IP" ]; then \
+		echo "Installed:  VM not running"; \
+	else \
+		INSTALLED=$$(ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
+			"/usr/local/bin/kubesolo --version" 2>&1 | grep -oE '"version":"[^"]+"' | cut -d'"' -f4 || echo "not installed"); \
+		echo "Installed:  $$INSTALLED"; \
+	fi; \
+	echo "Configured: $(KUBESOLO_RELEASE)"
+
+kubesolo-check-updates:
+	@echo "Checking for Kubesolo updates..."
+	@echo "Current configured version: $(KUBESOLO_RELEASE)"
+	@echo ""
+	@echo "Latest releases from GitHub:"
+	@curl -sfL "https://api.github.com/repos/portainer/kubesolo/releases?per_page=5" | \
+		grep -E '"tag_name"' | head -5 | sed 's/.*"tag_name": "\(.*\)".*/  \1/'
+	@echo ""
+	@echo "To upgrade, edit VERSION file and run: make kubesolo-upgrade"
+
+kubesolo-upgrade:
+	@echo "Upgrading Kubesolo to $(KUBESOLO_RELEASE) in VM..."
+	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
+	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
+		"doas rc-service kubesolo stop && \
+		 cd /tmp && curl -sfL '$(KUBESOLO_BINARY_URL)' -o kubesolo.tar.gz && \
+		 tar -xzf kubesolo.tar.gz && \
+		 doas mv kubesolo /usr/local/bin/ && \
+		 doas chmod +x /usr/local/bin/kubesolo && \
+		 rm -f kubesolo.tar.gz && \
+		 doas rc-service kubesolo start"
+	@echo "Kubesolo upgraded to $(KUBESOLO_RELEASE)."
 
 kubectl:
 	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
 	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
-		"kubectl $(ARGS)"
+		"doas kubectl --kubeconfig=$(KUBECONFIG_VM_PATH) $(ARGS)"
+
+kubeconfig:
+	@echo "Retrieving kubeconfig from VM..."
+	@IP=$$($(VIRSH) domifaddr $(VM_NAME) 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1); \
+	if [ -z "$$IP" ]; then \
+		echo "ERROR: Could not determine VM IP. Is the VM running?"; \
+		exit 1; \
+	fi; \
+	mkdir -p $(HOME)/.kube; \
+	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$IP \
+		"doas cat $(KUBECONFIG_VM_PATH)" | \
+		sed "s|https://127.0.0.1:|https://$$IP:|g" | \
+		sed "s|https://localhost:|https://$$IP:|g" > $(KUBECONFIG_HOST_PATH)
+	@chmod 600 $(KUBECONFIG_HOST_PATH)
+	@echo ""
+	@echo "Kubeconfig saved to: $(KUBECONFIG_HOST_PATH)"
+	@echo ""
+	@echo "To use kubectl from your host:"
+	@echo "  export KUBECONFIG=$(KUBECONFIG_HOST_PATH)"
+	@echo "  kubectl get nodes"
 
 # =============================================================================
 # Cleanup

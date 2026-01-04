@@ -11,7 +11,19 @@ make help
 
 ## Project Overview
 
-This project provisions an Alpine Linux VM (diskless mode) on QEMU/KVM/Libvirt to run Kubesolo - a lightweight Kubernetes distribution. The OS is immutable with persistent storage for Kubernetes state.
+This project creates a local Kubernetes development environment using Kubesolo on Alpine Linux, running in a QEMU/KVM/libvirt virtual machine.
+
+### Core Goals
+
+1. **Easy OS Updates** - Alpine Linux cloud images allow simple version upgrades by changing VERSION file and recreating VM
+2. **Easy Kubesolo Updates** - Automated installation and in-place upgrades of Kubesolo
+3. **Simple Provisioning** - One-command VM creation with `make up`
+4. **Host Integration** - Automatic kubeconfig retrieval for host-side kubectl access
+5. **Reproducible** - Version-pinned configurations for consistent deployments
+
+### Philosophy
+
+Use reliable existing tools (libvirt, cloud-init, k3s/kubesolo) rather than building custom solutions. The Makefile is the primary interface for all operations.
 
 ## Tech Stack
 
@@ -69,12 +81,20 @@ make console    # Serial console access (Ctrl+] to exit)
 make info       # Detailed VM information
 ```
 
-### Kubesolo
+### Kubesolo & Host Integration
 ```bash
+make kubeconfig         # Copy kubeconfig to host (~/.kube/kubesolo)
 make kubesolo-status    # Check Kubesolo service
 make kubesolo-restart   # Restart Kubesolo
+make kubesolo-upgrade   # Upgrade Kubesolo in place
 make kubectl ARGS="..." # Run kubectl in VM
 make logs               # View Kubesolo logs
+```
+
+After running `make kubeconfig`, use kubectl from your host:
+```bash
+export KUBECONFIG=~/.kube/kubesolo
+kubectl get nodes
 ```
 
 ### Maintenance

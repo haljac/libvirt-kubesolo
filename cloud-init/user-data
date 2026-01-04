@@ -14,3 +14,11 @@ package_update: true
 packages:
   - curl
   - openssh
+  - iptables
+  - ip6tables
+  - ca-certificates
+  - cgroup-tools
+
+runcmd:
+  - rc-update add cgroups boot
+  - rc-service cgroups start

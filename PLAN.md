@@ -1,261 +1,229 @@
 # PLAN.md - Implementation Roadmap
 
+## Project Vision
+
+Create an easily maintainable local Kubernetes environment with:
+- **Alpine Linux VM** - Lightweight, easily updated via cloud images
+- **Kubesolo** - Lightweight Kubernetes (k3s-based), easily updated
+- **QEMU/KVM/libvirt** - Industry-standard virtualization
+- **Automation** - Simple Makefile commands for all operations
+- **Host Integration** - kubeconfig retrieval for host kubectl access
+
+**Philosophy**: Use reliable existing tools (libvirt, cloud-init, k3s/kubesolo) rather than building custom solutions.
+
+---
+
 ## Progress Overview
 
 | Phase | Status | Description |
 |-------|--------|-------------|
 | Phase 1 | **Complete** | Host Environment Setup |
 | Phase 2 | **Complete** | Alpine Linux Cloud VM |
-| Phase 3 | Pending | Kubesolo Installation |
-| Phase 4 | Pending | Immutable Update Strategy |
-| Phase 5 | **Complete** | Automation (Makefile) |
+| Phase 3 | **Complete** | Kubesolo Installation |
+| Phase 4 | **Complete** | Host Integration (kubeconfig) |
+| Phase 5 | **Complete** | Update Automation |
 
 ---
 
-## Current Host Status (Arch Linux / Omarchy)
+## Phase 1: Host Environment Setup ✅
 
-### Installed
-- [x] QEMU 10.1.2-3 (qemu-full, qemu-system-x86)
-- [x] libvirt 11.10.0
-- [x] virt-manager 5.1.0
-- [x] virt-install 5.1.0
-- [x] virsh CLI
-- [x] KVM support (/dev/kvm exists, VT-x enabled)
-- [x] UEFI support (edk2-ovmf)
-- [x] TPM emulation (swtpm)
-- [x] dnsmasq (NAT networking)
+**Status: Complete**
 
-### Configured (via `make setup`)
-- [x] Start libvirtd service
-- [x] Add user to libvirt/kvm groups
-- [x] Configure UFW firewall for libvirt bridge (virbr0)
-- [x] Enable DHCP ports (67/68) on virbr0
+### Implemented
+- [x] libvirtd service management
+- [x] User group configuration (libvirt, kvm)
+- [x] UFW firewall rules for virbr0 bridge
+- [x] DHCP port configuration (67/68)
+- [x] Prerequisite checking (`make check`)
 
-### Manual Steps After Setup
-- Re-login OR run `newgrp libvirt` to apply group changes
-
----
-
-## Phase 1: Host Environment Setup
-
-**Status: Complete** ✅
-
-### 1.1 Setup via Makefile
+### Commands
 ```bash
-make setup    # Handles all host configuration
-make check    # Verifies prerequisites
+make setup    # One-time host configuration
+make check    # Verify prerequisites
 ```
 
-The `make setup` target:
-- Enables and starts libvirtd service
-- Adds user to libvirt and kvm groups
-- Ensures default NAT network exists
-- Configures UFW firewall rules for virbr0 (if UFW is installed)
-- Opens DHCP ports (67/68) for VM network
-
-### 1.2 Manual Steps Required
-After running `make setup`, user must:
-- Re-login OR run `newgrp libvirt` to apply group changes
-
 ---
 
-## Phase 2: Alpine Linux Diskless VM
+## Phase 2: Alpine Linux Cloud VM ✅
 
-**Status: Ready** - All automation in place
+**Status: Complete**
 
-### 2.1 Download Alpine Virtual ISO ✅
-- URL: https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/
-  - https://wiki.alpinelinux.org/wiki/Installing_Alpine_in_a_virtual_machine
-  - https://www.alpinelinux.org/downloads/
-- File: alpine-virt-3.21.3-x86_64.iso (optimized for virtual machines)
-- Command: `make download`
+### Implemented
+- [x] Alpine cloud image download (qcow2 with cloud-init)
+- [x] VM creation via virt-install
+- [x] Cloud-init configuration (user, SSH keys, packages)
+- [x] DHCP networking via libvirt default network
+- [x] SSH access from host
 
-### 2.2 VM Creation via virt-install ✅
-Defined in Makefile `create` target with:
-- 512MB RAM (configurable via `VM_MEMORY`)
-- 2 vCPUs (configurable via `VM_CPUS`)
-- Boot from Alpine ISO (read-only)
-- Virtio disk for persistent storage (8GB qcow2)
-- Virtio network (NAT via default network)
-- Serial console for headless access
-- Cloud-init ISO for initial configuration
+### Configuration
+- **Image**: `generic_alpine-3.21.5-x86_64-bios-cloudinit-r0.qcow2`
+- **Resources**: 512MB RAM, 2 vCPUs, 8GB disk
+- **User**: alpine/alpine
+- **Network**: DHCP on virbr0 (192.168.122.0/24)
 
-### 2.3 Cloud-init Configuration ✅
-Auto-generated files in `cloud-init/`:
-- `user-data` - User account, SSH keys, packages
-- `meta-data` - Instance ID, hostname
-- `cidata.iso` - Generated ISO attached to VM
-
----
-
-## Phase 3: Alpine Diskless Configuration
-
-**Status: Pending** - Requires manual setup after first boot
-
-### 3.1 Initial Alpine Setup
-After `make up` and `make console`:
+### Commands
 ```bash
-setup-alpine           # Basic configuration
-setup-disk -m data     # Configure data disk mode
-```
-
-### 3.2 Create apkovl (Alpine Local Backup)
-Configuration overlay containing:
-- Network configuration
-- SSH keys and access
-- OpenRC service definitions
-- Mount points for persistent storage
-
-### 3.3 Mount persistent storage
-Add to `/etc/fstab`:
-```
-/dev/vdb1  /var/lib/kubesolo  ext4  defaults  0  2
+make download   # Download Alpine cloud image
+make create     # Create VM
+make ssh        # Connect to VM
+make destroy    # Remove VM
 ```
 
 ---
 
-## Phase 4: Kubesolo Installation
+## Phase 3: Kubesolo Installation ✅
 
-**Status: Pending**
+**Status: Complete**
 
-### 4.1 Download Kubesolo binary
-- Fetch from https://www.kubesolo.io/
-- Store on persistent disk at `/var/lib/kubesolo/bin/`
+### Research Findings
 
-### 4.2 Create OpenRC service
-`/etc/init.d/kubesolo`:
+- **Project**: [Kubesolo](https://github.com/portainer/kubesolo) by Portainer
+- **Base**: K3s fork, ultra-lightweight for constrained environments
+- **RAM**: ~200MB during normal operation (designed for <512MB systems)
+- **Install**: `curl -sfL https://get.kubesolo.io | sh -`
+- **Kubeconfig**: `/var/lib/kubesolo/pki/admin/admin.kubeconfig`
+- **Alpine Support**: Yes (musl-compatible binaries, auto-detects init system)
+
+### Implemented
+
+- [x] Research Kubesolo installation method
+- [x] Identify kubeconfig location
+- [x] Create `make kubesolo-install` target
+- [x] Create `make kubesolo-wait` target (waits for ready state)
+- [x] Create `make kubesolo-upgrade` target
+- [x] Create `make kubeconfig` target (retrieves to host)
+- [x] Update kubectl target to use correct kubeconfig path
+
+### Commands
 ```bash
-#!/sbin/openrc-run
-name="kubesolo"
-command="/var/lib/kubesolo/bin/kubesolo"
-command_args="server"
-pidfile="/run/kubesolo.pid"
+make kubesolo-install   # Install Kubesolo in VM
+make kubesolo-status    # Check service status
+make kubesolo-restart   # Restart service
+make kubesolo-upgrade   # Upgrade to new version
+make kubeconfig         # Copy kubeconfig to ~/.kube/kubesolo
+make kubectl ARGS="..." # Run kubectl in VM
 ```
 
-### 4.3 Configure Kubesolo
-- Data directory: `/var/lib/kubesolo/data`
-- Config: `/var/lib/kubesolo/config.yaml`
-- Logs: `/var/lib/kubesolo/logs`
+### Data Persistence
+- Kubesolo data: `/var/lib/kubesolo`
+- Kubeconfig: `/var/lib/kubesolo/pki/admin/admin.kubeconfig`
+- Persists on boot disk (8GB qcow2)
 
 ---
 
-## Phase 5: Immutable Update Strategy
+## Phase 4: Host Integration (kubeconfig) ✅
 
-**Status: Pending** - Documented in README.md
+**Status: Complete**
 
-### 5.1 OS Updates
-Two approaches:
-1. **Replace ISO**: Download new Alpine ISO, `make destroy && make up`
-2. **Update overlay**: `apk upgrade` then `lbu commit`
+### Implemented
+- [x] `make kubeconfig` retrieves kubeconfig from VM
+- [x] Automatically replaces 127.0.0.1/localhost with VM IP
+- [x] Saves to `~/.kube/kubesolo`
+- [x] Sets proper permissions (600)
 
-### 5.2 Kubesolo Updates
+### Usage
 ```bash
-make ssh
-cd /var/lib/kubesolo
-curl -LO https://kubesolo.io/releases/latest/kubesolo
-chmod +x kubesolo
-sudo rc-service kubesolo restart
+# Get kubeconfig from VM
+make kubeconfig
+
+# Use kubectl from host
+export KUBECONFIG=~/.kube/kubesolo
+kubectl get nodes
+kubectl get pods -A
 ```
 
-### 5.3 Rollback Strategy
-- Keep previous Alpine ISO versions
-- Maintain overlay backups
-- Kubesolo data persists independently
+### Notes
+- Kubeconfig must be refreshed if VM IP changes (run `make kubeconfig` again)
+- The kubeconfig grants cluster-admin access
 
 ---
 
-## Phase 6: Automation (Makefile)
+## Phase 5: Update Automation ✅
 
-**Status: Complete** ✅
+**Status: Complete**
 
-### Implemented Targets
-| Target | Description |
-|--------|-------------|
-| `help` | Show all available commands |
-| `up` | Download ISO + create VM (quick start) |
-| `down` | Stop VM |
-| `setup` | Configure host environment |
-| `check` | Verify prerequisites |
-| `download` | Fetch Alpine ISO |
-| `create` | Create and start VM |
-| `start` | Start existing VM |
-| `stop` | Graceful shutdown |
-| `restart` | Stop then start |
-| `destroy` | Remove VM completely |
-| `ssh` | Connect via SSH |
-| `console` | Serial console access |
-| `ip` | Show VM IP address |
-| `status` | Show VM state |
-| `info` | Detailed VM information |
-| `logs` | View Kubesolo logs |
-| `kubesolo-status` | Check Kubesolo service |
-| `kubesolo-restart` | Restart Kubesolo |
-| `kubectl` | Run kubectl in VM |
-| `clean` | Remove downloads |
-| `clean-all` | Remove everything |
+### Implemented
+- [x] `make check-updates` - Check for new Alpine cloud image releases
+- [x] `make upgrade ALPINE_RELEASE_NEW=X` - Upgrade Alpine (recreates VM)
+- [x] `make kubesolo-version` - Show installed vs configured version
+- [x] `make kubesolo-check-updates` - Check GitHub for new Kubesolo releases
+- [x] `make kubesolo-upgrade` - Upgrade Kubesolo in place
 
-### Configuration Variables
-```makefile
-VM_NAME        := kubesolo
-ALPINE_VERSION := 3.21
-ALPINE_MINOR   := 3
-VM_MEMORY      := 512
-VM_CPUS        := 2
-DATA_DISK_SIZE := 8G
-SSH_USER       := alpine
+### Alpine Updates
+```bash
+make check-updates              # Check for new Alpine releases
+make upgrade ALPINE_RELEASE_NEW=6  # Upgrade Alpine (recreates VM)
 ```
+
+### Kubesolo Updates
+```bash
+make kubesolo-version          # Show current version
+make kubesolo-check-updates    # Check for new releases
+make kubesolo-upgrade          # Upgrade in place
+```
+
+### Considerations
+- Alpine upgrades require VM recreation (stateless OS)
+- Kubesolo upgrades preserve cluster state
+- Kubeconfig may need refresh after upgrades (`make kubeconfig`)
 
 ---
 
-## Project Structure
+## Tool Stack
 
-**Status: Complete** ✅
+| Component | Tool | Rationale |
+|-----------|------|-----------|
+| Hypervisor | QEMU/KVM | Industry standard, hardware acceleration |
+| VM Management | libvirt/virsh | Mature, well-documented API |
+| VM Creation | virt-install | Declarative, scriptable |
+| Guest Config | cloud-init | Standard for cloud VMs |
+| Guest OS | Alpine Linux | Minimal footprint, cloud images |
+| Kubernetes | Kubesolo (k3s) | Lightweight, single-node optimized |
+| Automation | Make | Simple, no dependencies, universal |
+
+---
+
+## File Structure
 
 ```
-qemu-kubesolo/
-├── CLAUDE.md           # AI assistant guide
-├── PLAN.md             # This file
-├── README.md           # User documentation
-├── Makefile            # Primary automation
+.
+├── Makefile              # Primary automation interface
+├── VERSION               # Version pinning
+├── README.md             # User documentation
+├── PLAN.md               # This file
+├── CLAUDE.md             # AI assistant guide
+├── .gitignore
 ├── alpine/
-│   ├── apkovl/         # Overlay configs (future)
-│   └── iso/            # Downloaded ISOs
+│   ├── images/           # Downloaded cloud images (.gitignored)
+│   └── apkovl/           # Custom overlays (future)
 ├── cloud-init/
-│   ├── meta-data       # Auto-generated
-│   ├── user-data       # Auto-generated
-│   └── cidata.iso      # Auto-generated
-├── libvirt/            # Domain definitions (optional)
-├── scripts/            # Helper scripts (future)
-└── storage/            # Storage configs (future)
+│   ├── user-data         # Cloud-init user configuration
+│   └── meta-data         # Cloud-init instance metadata
+├── scripts/
+│   └── install-kubesolo.sh  # Kubesolo installation (planned)
+└── libvirt/              # Domain definitions (optional)
 ```
 
 ---
 
-## Tool Stack Decision
+## Project Complete ✅
 
-**Decision: virt-install/virsh + cloud-init + Makefile** ✅
+All phases have been implemented:
 
-### Why This Stack?
-1. **virt-install**: Declarative VM creation from CLI, native libvirt integration
-2. **virsh**: Full VM lifecycle management, scriptable
-3. **cloud-init**: Industry-standard for VM provisioning, works with Alpine
-4. **Makefile**: Simple, no external dependencies, version-controllable
+1. ~~**Research Kubesolo** - Visit kubesolo.io, understand installation~~ ✅
+2. ~~**Create install targets** - Automate Kubesolo installation~~ ✅
+3. ~~**Add kubeconfig target** - Retrieve and configure kubeconfig~~ ✅
+4. ~~**Test end-to-end** - Run `make up && make kubesolo-install && make kubeconfig`~~ ✅
+5. ~~**Verify kubectl access** - Ensure `kubectl get nodes` works from host~~ ✅
+6. ~~**Update Automation** - Implement Phase 5 for version updates~~ ✅
 
-### Alternatives Considered
-| Tool | Pros | Cons |
-|------|------|------|
-| Terraform + libvirt provider | Declarative, state management | Overkill for single VM |
-| Vagrant + libvirt | Easy Vagrantfile syntax | Extra abstraction layer |
-| Packer | Great for building ISOs | Only needed for custom ISOs |
-| Ansible | Good for configuration | Better for multi-host |
+### Full Workflow
+```bash
+make setup              # One-time host configuration
+make up                 # Create Alpine VM
+make kubesolo-install   # Install Kubesolo
+make kubeconfig         # Get kubeconfig to host
 
----
-
-## Next Steps
-
-1. **Immediate**: Run `make setup` to configure host
-2. **Immediate**: Run `make up` to create VM
-3. **Next**: Configure Alpine diskless mode inside VM
-4. **Next**: Install Kubesolo on persistent storage
-5. **Future**: Create apkovl for reproducible configuration
-6. **Future**: Automate Kubesolo installation in cloud-init
+export KUBECONFIG=~/.kube/kubesolo
+kubectl get nodes       # Works from host!
+```
