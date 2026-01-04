@@ -2,11 +2,20 @@
 # Primary automation interface for managing the Alpine Linux VM running Kubesolo
 
 # =============================================================================
-# Configuration
+# Version Configuration (can be overridden via VERSION file or environment)
+# =============================================================================
+-include VERSION
+
+# Defaults (used if VERSION file doesn't exist)
+PROJECT_VERSION ?= 0.1.0
+ALPINE_VERSION  ?= 3.21
+ALPINE_RELEASE  ?= 5
+KUBESOLO_VERSION ?= latest
+
+# =============================================================================
+# Derived Configuration
 # =============================================================================
 VM_NAME        := kubesolo
-ALPINE_VERSION := 3.21
-ALPINE_RELEASE := 5
 
 # Cloud image (qcow2 with cloud-init pre-installed)
 ALPINE_IMAGE   := generic_alpine-$(ALPINE_VERSION).$(ALPINE_RELEASE)-x86_64-bios-cloudinit-r0.qcow2
@@ -71,9 +80,14 @@ help:
 	@echo "  make clean      - Remove downloaded files"
 	@echo "  make clean-all  - Remove everything (VM + downloads)"
 	@echo ""
+	@echo "Versioning:"
+	@echo "  make version       - Show current versions"
+	@echo "  make check-updates - Check for Alpine image updates"
+	@echo "  make release       - Tag a new release"
+	@echo ""
 	@echo "Configuration:"
+	@echo "  PROJECT=$(PROJECT_VERSION) ALPINE=$(ALPINE_VERSION).$(ALPINE_RELEASE)"
 	@echo "  VM_NAME=$(VM_NAME)  VM_MEMORY=$(VM_MEMORY)MB  VM_CPUS=$(VM_CPUS)"
-	@echo "  BOOT_DISK_SIZE=$(BOOT_DISK_SIZE)"
 
 # =============================================================================
 # Quick Start
@@ -304,3 +318,64 @@ cloud-init/meta-data:
 	@echo "Creating default cloud-init meta-data..."
 	@echo 'instance-id: $(VM_NAME)' > cloud-init/meta-data
 	@echo 'local-hostname: $(VM_NAME)' >> cloud-init/meta-data
+
+# =============================================================================
+# Version Management
+# =============================================================================
+.PHONY: version check-updates release upgrade
+
+version:
+	@echo "Kubesolo VM Project"
+	@echo "==================="
+	@echo "Project Version: $(PROJECT_VERSION)"
+	@echo "Alpine Version:  $(ALPINE_VERSION).$(ALPINE_RELEASE)"
+	@echo "Alpine Image:    $(ALPINE_IMAGE)"
+	@echo "Kubesolo:        $(KUBESOLO_VERSION)"
+	@echo ""
+	@echo "Image URL: $(ALPINE_URL)"
+
+check-updates:
+	@echo "Checking for Alpine cloud image updates..."
+	@echo "Current: $(ALPINE_VERSION).$(ALPINE_RELEASE)"
+	@echo ""
+	@echo "Available releases in $(ALPINE_VERSION).x series:"
+	@curl -sL "https://dl-cdn.alpinelinux.org/alpine/v$(ALPINE_VERSION)/releases/cloud/" | \
+		grep -oE 'generic_alpine-$(ALPINE_VERSION)\.[0-9]+-x86_64-bios-cloudinit-r[0-9]+\.qcow2"' | \
+		sed 's/"$$//' | sort -V | uniq | tail -5
+	@echo ""
+	@echo "To upgrade, edit VERSION file and run: make clean && make download"
+
+release:
+	@if [ -z "$(TAG)" ]; then \
+		echo "Usage: make release TAG=v0.1.0"; \
+		echo ""; \
+		echo "Current version: $(PROJECT_VERSION)"; \
+		exit 1; \
+	fi
+	@echo "Creating release $(TAG)..."
+	@sed -i 's/^PROJECT_VERSION=.*/PROJECT_VERSION=$(TAG:v%=%)/' VERSION
+	@git add VERSION
+	@git commit -m "Release $(TAG)" || true
+	@git tag -a $(TAG) -m "Release $(TAG) - Alpine $(ALPINE_VERSION).$(ALPINE_RELEASE)"
+	@echo ""
+	@echo "Release $(TAG) created. Push with:"
+	@echo "  git push origin master --tags"
+
+upgrade:
+	@if [ -z "$(ALPINE_RELEASE_NEW)" ]; then \
+		echo "Usage: make upgrade ALPINE_RELEASE_NEW=6"; \
+		echo ""; \
+		echo "Current: Alpine $(ALPINE_VERSION).$(ALPINE_RELEASE)"; \
+		echo ""; \
+		echo "This will:"; \
+		echo "  1. Update VERSION file"; \
+		echo "  2. Download new image"; \
+		echo "  3. Recreate VM with new image"; \
+		exit 1; \
+	fi
+	@echo "Upgrading Alpine from $(ALPINE_VERSION).$(ALPINE_RELEASE) to $(ALPINE_VERSION).$(ALPINE_RELEASE_NEW)..."
+	@sed -i 's/^ALPINE_RELEASE=.*/ALPINE_RELEASE=$(ALPINE_RELEASE_NEW)/' VERSION
+	$(MAKE) destroy
+	$(MAKE) clean
+	$(MAKE) up
+	@echo "Upgrade complete!"

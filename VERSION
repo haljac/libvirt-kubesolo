@@ -1,0 +1,19 @@
+# Kubesolo VM Project Version
+# This file tracks versions for reproducible builds
+
+# Project version (this repo's automation)
+PROJECT_VERSION=0.1.0
+
+# Alpine Linux cloud image version
+ALPINE_VERSION=3.21
+ALPINE_RELEASE=5
+ALPINE_IMAGE=generic_alpine-${ALPINE_VERSION}.${ALPINE_RELEASE}-x86_64-bios-cloudinit-r0.qcow2
+ALPINE_URL=https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/cloud/${ALPINE_IMAGE}
+
+# Kubesolo version (to be installed)
+KUBESOLO_VERSION=latest
+
+# VM Configuration
+VM_MEMORY=512
+VM_CPUS=2
+BOOT_DISK_SIZE=8G
