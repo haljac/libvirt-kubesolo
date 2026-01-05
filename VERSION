@@ -2,7 +2,7 @@
 # This file tracks versions for reproducible builds
 
 # Project version (this repo's automation)
-PROJECT_VERSION=1.0.0
+PROJECT_VERSION=2.0.0
 
 # Alpine Linux cloud image version
 ALPINE_VERSION=3.21

@@ -16,14 +16,15 @@ A local Kubernetes development environment using [Kubesolo](https://www.kubesolo
 # 1. Configure your host (one-time setup)
 make setup
 
-# 2. Create the VM
+# 2. Create the VM (requires sudo for default storage location)
 make up
 
 # 3. Install Kubesolo
 make kubesolo-install
 
 # 4. Get kubeconfig for host kubectl access
-make kubeconfig
+make kubeconfig-agent   # Via qemu-guest-agent (no SSH keys needed)
+# Or: make kubeconfig   # Via SSH (fallback)
 
 # 5. Use kubectl from your host
 export KUBECONFIG=~/.kube/kubesolo
@@ -97,6 +98,13 @@ sudo apt install qemu-kvm libvirt-daemon-system virtinst xorriso
 | `make check-updates` | Check for Alpine image updates |
 | `make upgrade ALPINE_RELEASE_NEW=X` | Upgrade Alpine version |
 
+### Artifact Generation (for External Provisioning)
+
+| Command | Description |
+|---------|-------------|
+| `make artifacts` | Generate cloud-init files for external use |
+| `make kubeconfig-agent` | Get kubeconfig via qemu-guest-agent |
+
 Run `make help` for all available commands.
 
 ## Architecture
@@ -116,6 +124,7 @@ Run `make help` for all available commands.
 │  │  ┌─────────────────────────────────────────────────┐  │  │
 │  │  │         Alpine Linux 3.21 (cloud image)         │  │  │
 │  │  │            virbr0: 192.168.122.x                │  │  │
+│  │  │            qemu-guest-agent enabled             │  │  │
 │  │  └─────────────────────────────────────────────────┘  │  │
 │  │                          │                            │  │
 │  │  ┌─────────────────────────────────────────────────┐  │  │
@@ -134,6 +143,10 @@ Run `make help` for all available commands.
 │  │  │       /var/lib/kubesolo - Kubernetes state      │  │  │
 │  │  └─────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────┘  │
+│                              ▲                              │
+│                   virtio-serial channel                     │
+│              (qemu-guest-agent communication)               │
+│                    No SSH keys required                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -144,7 +157,7 @@ Run `make help` for all available commands.
 All versions are tracked in the `VERSION` file:
 
 ```bash
-PROJECT_VERSION=0.1.0      # This project's version
+PROJECT_VERSION=2.0.0      # This project's version
 ALPINE_VERSION=3.21        # Alpine major.minor
 ALPINE_RELEASE=5           # Alpine patch version
 KUBESOLO_RELEASE=v1.1.0    # Kubesolo version
@@ -221,6 +234,50 @@ Common issues:
 
 Note: Alpine uses `doas` instead of `sudo`.
 
+## Integration with External Provisioning Systems
+
+This project can generate artifacts for external provisioning systems (libvirt wrappers, Terraform, etc.).
+
+### Generate Cloud-Init Artifacts
+
+```bash
+# Generate with auto-install Kubesolo
+AUTO_INSTALL_KUBESOLO=true make artifacts
+
+# Or customize with environment variables
+SSH_PUBLIC_KEY="ssh-ed25519 AAAA..." \
+VM_HOSTNAME="prod-kubesolo" \
+AUTO_INSTALL_KUBESOLO=true \
+make artifacts
+```
+
+### Retrieve Kubeconfig via qemu-guest-agent
+
+The primary retrieval method uses qemu-guest-agent - **no SSH keys required**:
+
+```bash
+# No network or SSH keys required - uses virtio-serial channel
+make kubeconfig-agent
+
+# Or with custom API server address
+KUBECONFIG_API_ADDRESS=10.0.0.50 make kubeconfig-agent
+```
+
+The VM is automatically configured with qemu-guest-agent and the necessary virtio-serial channel.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SSH_PUBLIC_KEY` | Auto-detect | SSH public key for VM access |
+| `VM_USER` | `alpine` | VM username |
+| `VM_PASSWORD` | `alpine` | VM password |
+| `VM_HOSTNAME` | `kubesolo` | VM hostname |
+| `AUTO_INSTALL_KUBESOLO` | `false` | Install Kubesolo at first boot |
+| `KUBECONFIG_API_ADDRESS` | (auto) | Override API server address |
+
+See [docs/integration.md](docs/integration.md) for full integration documentation.
+
 ## File Structure
 
 ```
@@ -233,9 +290,15 @@ Note: Alpine uses `doas` instead of `sudo`.
 ├── .gitignore
 ├── alpine/
 │   └── images/           # Downloaded cloud images (.gitignored)
-└── cloud-init/
-    ├── user-data         # Cloud-init user configuration
-    └── meta-data         # Cloud-init instance metadata
+├── cloud-init/
+│   ├── user-data         # Cloud-init user configuration
+│   ├── user-data.template # Template for artifact generation
+│   └── meta-data         # Cloud-init instance metadata
+├── scripts/
+│   ├── generate-cloud-init.sh  # Standalone cloud-init generator
+│   └── get-kubeconfig.sh       # Standalone kubeconfig retrieval
+└── docs/
+    └── integration.md    # Integration guide for external systems
 ```
 
 ## References

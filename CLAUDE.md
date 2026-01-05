@@ -1,158 +1,93 @@
-# CLAUDE.md - Project Guide for AI Assistants
+# CLAUDE.md - AI Assistant Guide
 
-## Important: Always Read the Makefile First
+## First Steps
 
-**Before running any command, always read `Makefile` to check if the command already exists.** Use Makefile targets as your first resort. Only use one-off commands if no suitable target exists, and consider adding new targets for commands that may be reused.
+**Before doing anything, read these files:**
+
+1. **`README.md`** - User documentation, quick start, all available commands
+2. **`PLAN.md`** - Implementation roadmap, architecture decisions, progress tracking
+3. **`Makefile`** - Check for existing targets before running raw commands
 
 ```bash
-# Check available commands
-make help
+make help  # List all available commands
 ```
 
-## Project Overview
+## Project Summary
 
-This project creates a local Kubernetes development environment using Kubesolo on Alpine Linux, running in a QEMU/KVM/libvirt virtual machine.
+Local Kubernetes development environment using **Kubesolo** (lightweight k3s) on **Alpine Linux** in a **QEMU/KVM/libvirt** VM.
 
-### Core Goals
-
-1. **Easy OS Updates** - Alpine Linux cloud images allow simple version upgrades by changing VERSION file and recreating VM
-2. **Easy Kubesolo Updates** - Automated installation and in-place upgrades of Kubesolo
-3. **Simple Provisioning** - One-command VM creation with `make up`
-4. **Host Integration** - Automatic kubeconfig retrieval for host-side kubectl access
-5. **Reproducible** - Version-pinned configurations for consistent deployments
-
-### Philosophy
-
-Use reliable existing tools (libvirt, cloud-init, k3s/kubesolo) rather than building custom solutions. The Makefile is the primary interface for all operations.
-
-## Tech Stack
-
-- **Hypervisor**: QEMU/KVM via libvirt
-- **Guest OS**: Alpine Linux (diskless/data-RAM mode)
-- **Container Runtime**: Kubesolo (bundles containerd)
-- **VM Management**: virt-install, virsh, cloud-init
-- **Automation**: Makefile (primary interface)
+**Key design decisions:**
+- **qemu-guest-agent** is the primary method for hypervisor-to-VM communication (no SSH required for kubeconfig retrieval)
+- **Makefile** is the primary interface - always check for existing targets first
+- **Cloud-init** handles VM provisioning - modify `cloud-init/user-data`, not manual setup
+- **Alpine uses `doas`** instead of `sudo` for privileged commands inside VM
 
 ## Directory Structure
 
 ```
 .
-├── CLAUDE.md           # This file - AI assistant guide
-├── PLAN.md             # Implementation roadmap and progress
-├── README.md           # User-facing documentation
-├── Makefile            # PRIMARY AUTOMATION INTERFACE
-├── alpine/             # Alpine images and overlay files
-│   ├── apkovl/         # Alpine overlay configurations
-│   └── images/         # Downloaded cloud images (qcow2)
-├── cloud-init/         # Cloud-init configurations
-│   ├── meta-data       # Instance metadata
-│   ├── user-data       # User configuration (SSH keys, packages)
-│   └── cidata.iso      # Generated cloud-init ISO
-├── libvirt/            # Libvirt domain definitions
-├── scripts/            # Helper scripts
-└── storage/            # Persistent storage configs
+├── Makefile                    # Primary automation interface
+├── VERSION                     # Version pinning (Alpine, Kubesolo)
+├── cloud-init/
+│   ├── user-data               # VM provisioning config
+│   └── user-data.template      # Template for artifact generation
+├── scripts/
+│   ├── generate-cloud-init.sh  # Standalone cloud-init generator
+│   └── get-kubeconfig.sh       # Kubeconfig retrieval (guest-agent/SSH)
+├── docs/
+│   └── integration.md          # External provisioning integration guide
+└── alpine/images/              # Downloaded cloud images (.gitignored)
 ```
 
-## Makefile Commands (Primary Interface)
+## Common Workflows
 
-**Always use these instead of raw commands:**
-
-### Quick Start
+### Local Development
 ```bash
-make setup      # Configure host (libvirtd, groups) - run once
-make up         # Download ISO + create VM (first run)
-make ssh        # Connect to VM
+make setup              # One-time host configuration
+make up                 # Create VM (requires sudo)
+make kubesolo-install   # Install Kubesolo
+make kubeconfig-agent   # Get kubeconfig via qemu-guest-agent (no SSH!)
 ```
 
-### VM Lifecycle
+### Generate Artifacts for Remote Deployment
 ```bash
-make create     # Create and start VM
-make start      # Start existing VM
-make stop       # Graceful shutdown
-make restart    # Stop then start
-make destroy    # Remove VM completely
+AUTO_INSTALL_KUBESOLO=true make artifacts  # Generate cloud-init with auto-install
 ```
 
-### Information
+### Kubeconfig Retrieval Methods
 ```bash
-make status     # VM state (running/stopped)
-make ip         # Get VM IP address
-make console    # Serial console access (Ctrl+] to exit)
-make info       # Detailed VM information
+make kubeconfig-agent   # Via qemu-guest-agent (preferred, no SSH keys needed)
+make kubeconfig         # Via SSH (fallback)
 ```
 
-### Kubesolo & Host Integration
-```bash
-make kubeconfig         # Copy kubeconfig to host (~/.kube/kubesolo)
-make kubesolo-status    # Check Kubesolo service
-make kubesolo-restart   # Restart Kubesolo
-make kubesolo-upgrade   # Upgrade Kubesolo in place
-make kubectl ARGS="..." # Run kubectl in VM
-make logs               # View Kubesolo logs
-```
-
-After running `make kubeconfig`, use kubectl from your host:
-```bash
-export KUBECONFIG=~/.kube/kubesolo
-kubectl get nodes
-```
-
-### Maintenance
-```bash
-make clean      # Remove downloaded files
-make clean-all  # Remove VM + downloads
-make check      # Verify host prerequisites
-```
-
-## Configuration Variables
-
-Edit these at the top of `Makefile`:
+## Key Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VM_NAME` | kubesolo | VM name in libvirt |
-| `VM_MEMORY` | 512 | RAM in MB |
-| `VM_CPUS` | 2 | Virtual CPUs |
-| `DATA_DISK_SIZE` | 8G | Persistent storage |
-| `ALPINE_VERSION` | 3.21 | Alpine Linux version |
-| `SSH_USER` | alpine | SSH username |
+| `SSH_PUBLIC_KEY` | Auto-detect | SSH key for VM access |
+| `AUTO_INSTALL_KUBESOLO` | `false` | Install Kubesolo at first boot |
+| `KUBECONFIG_API_ADDRESS` | (auto) | Override API server address |
+| `LIBVIRT_IMAGES` | `/var/lib/libvirt/images` | Storage location (sudo required for default) |
 
 ## Important Constraints
 
-- VM Memory: 512MB total (~100MB for Alpine, ~400MB for Kubesolo)
-- Alpine uses cloud image with cloud-init pre-installed
-- Persistent data lives on the boot disk at `/var/lib/kubesolo`
-- **Alpine uses `doas` instead of `sudo`** - always use `doas` for privileged commands inside VM
-- VM credentials: username `alpine`, password `alpine`
+- **VM Memory**: 512MB (Alpine ~100MB + Kubesolo ~200MB)
+- **VM Credentials**: `alpine` / `alpine`
+- **Kubeconfig path in VM**: `/var/lib/kubesolo/pki/admin/admin.kubeconfig`
+- **qemu-guest-agent**: Required for `make kubeconfig-agent` - automatically installed via cloud-init
 
-## Host Requirements
+## When Adding Features
 
-- Arch Linux with QEMU/KVM/Libvirt installed
-- User in `libvirt` and `kvm` groups (run `make setup`)
-- libvirtd service running (run `make setup`)
-- Packages: qemu-full, libvirt, virt-install, dnsmasq
-- If using UFW: firewall rules for virbr0 bridge (run `make setup`)
+1. Check if a Makefile target already exists
+2. Add new targets for reusable commands
+3. Update `PLAN.md` with progress
+4. Update `README.md` for user-facing changes
+5. Update `docs/integration.md` for integration-related changes
 
-## Development Guidelines
+## Testing Changes
 
-1. **Check Makefile first** - Always look for existing targets before running raw commands
-2. **Add reusable commands** - If you need a command multiple times, add it to the Makefile
-3. **Test idempotently** - Use `make destroy && make up` for clean testing
-4. **Keep docs updated** - Update this file and PLAN.md when adding features
-5. **Use cloud-init** - Configure VM via `cloud-init/user-data`, not manual setup
-
-## When to Add New Makefile Targets
-
-Add a new target when:
-- A command will be run more than once
-- A command has complex flags or options
-- A command is part of a common workflow
-- A command requires specific environment setup
-
-Example of adding a new target:
-```makefile
-.PHONY: my-new-target
-my-new-target:
-	@echo "Doing something useful..."
-	some-command --with-flags
+```bash
+make destroy && make up && make kubesolo-install  # Clean test
+make kubeconfig-agent                              # Verify guest-agent works
+KUBECONFIG=~/.kube/kubesolo kubectl get nodes     # Verify kubectl access
 ```

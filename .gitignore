@@ -5,6 +5,9 @@ alpine/iso/*.iso
 # Generated cloud-init ISO
 cloud-init/cidata.iso
 
+# Generated artifacts for external provisioning
+artifacts/
+
 # Libvirt generates these
 *.log
 *.pid

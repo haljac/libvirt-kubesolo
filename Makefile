@@ -13,6 +13,20 @@ ALPINE_RELEASE  ?= 5
 KUBESOLO_VERSION ?= latest
 
 # =============================================================================
+# Cloud-Init Configuration (can be overridden via environment)
+# =============================================================================
+# SSH key for VM access (auto-detected from ~/.ssh if not set)
+SSH_PUBLIC_KEY ?= $(shell cat ~/.ssh/id_ed25519.pub 2>/dev/null || cat ~/.ssh/id_rsa.pub 2>/dev/null)
+# VM user credentials
+VM_USER     ?= alpine
+VM_PASSWORD ?= alpine
+VM_HOSTNAME ?= kubesolo
+# Auto-install Kubesolo at first boot (for standalone artifacts)
+AUTO_INSTALL_KUBESOLO ?= false
+# Override API server address in kubeconfig (default: auto-detect VM IP)
+KUBECONFIG_API_ADDRESS ?=
+
+# =============================================================================
 # Derived Configuration
 # =============================================================================
 VM_NAME        := kubesolo
@@ -27,7 +41,9 @@ IMAGE_PATH     := $(IMAGE_DIR)/$(ALPINE_IMAGE)
 VM_MEMORY      := 512
 VM_CPUS        := 2
 BOOT_DISK_SIZE := 8G
-LIBVIRT_IMAGES := /var/lib/libvirt/images
+# Storage location - override via LIBVIRT_IMAGES env var if needed
+# Default requires sudo; set to user-owned dir + ACLs to avoid sudo
+LIBVIRT_IMAGES ?= /var/lib/libvirt/images
 BASE_IMAGE_PATH := $(LIBVIRT_IMAGES)/$(VM_NAME)-base.qcow2
 BOOT_DISK_PATH := $(LIBVIRT_IMAGES)/$(VM_NAME)-boot.qcow2
 CIDATA_PATH    := $(LIBVIRT_IMAGES)/$(VM_NAME)-cidata.iso
@@ -87,8 +103,13 @@ help:
 	@echo "  make check      - Verify host prerequisites"
 	@echo ""
 	@echo "Maintenance:"
-	@echo "  make clean      - Remove downloaded files"
-	@echo "  make clean-all  - Remove everything (VM + downloads)"
+	@echo "  make clean          - Remove downloaded files"
+	@echo "  make clean-all      - Remove everything (VM + downloads)"
+	@echo "  make clean-artifacts - Remove generated artifacts"
+	@echo ""
+	@echo "Artifact Generation (for external provisioning):"
+	@echo "  make artifacts       - Generate cloud-init files for external use"
+	@echo "  make kubeconfig-agent - Get kubeconfig via qemu-guest-agent"
 	@echo ""
 	@echo "Versioning:"
 	@echo "  make version       - Show current versions"
@@ -98,6 +119,12 @@ help:
 	@echo "Configuration:"
 	@echo "  PROJECT=$(PROJECT_VERSION) ALPINE=$(ALPINE_VERSION).$(ALPINE_RELEASE)"
 	@echo "  VM_NAME=$(VM_NAME)  VM_MEMORY=$(VM_MEMORY)MB  VM_CPUS=$(VM_CPUS)"
+	@echo ""
+	@echo "Environment Variables (override defaults):"
+	@echo "  SSH_PUBLIC_KEY      - SSH public key for VM access"
+	@echo "  VM_USER/VM_PASSWORD - VM credentials (default: alpine/alpine)"
+	@echo "  AUTO_INSTALL_KUBESOLO - Install Kubesolo at first boot (true/false)"
+	@echo "  KUBECONFIG_API_ADDRESS - Override API server address in kubeconfig"
 
 # =============================================================================
 # Quick Start
@@ -186,7 +213,8 @@ create: check-libvirtd $(IMAGE_PATH) cloud-init/user-data cloud-init/meta-data
 		genisoimage -output cloud-init/cidata.iso -volid cidata -joliet -rock cloud-init/user-data cloud-init/meta-data 2>/dev/null || \
 		mkisofs -output cloud-init/cidata.iso -volid cidata -joliet -rock cloud-init/user-data cloud-init/meta-data 2>/dev/null || \
 		xorriso -as mkisofs -o cloud-init/cidata.iso -volid cidata -joliet -rock cloud-init/user-data cloud-init/meta-data
-	@echo "Copying base image to libvirt directory..."
+	@echo "Copying base image to libvirt storage..."
+	@sudo mkdir -p $(LIBVIRT_IMAGES)
 	@sudo cp $(IMAGE_PATH) $(BASE_IMAGE_PATH)
 	@sudo chmod 644 $(BASE_IMAGE_PATH)
 	@echo "Creating boot disk from cloud image..."
@@ -201,6 +229,7 @@ create: check-libvirtd $(IMAGE_PATH) cloud-init/user-data cloud-init/meta-data
 		--disk path=$(BOOT_DISK_PATH),format=qcow2,bus=virtio \
 		--disk path=$(CIDATA_PATH),device=cdrom \
 		--network network=$(VM_NETWORK),model=virtio \
+		--channel unix,target_type=virtio,name=org.qemu.guest_agent.0 \
 		--os-variant alpinelinux3.19 \
 		--graphics none \
 		--console pty,target_type=serial \
@@ -407,16 +436,63 @@ kubeconfig:
 	@echo "  kubectl get nodes"
 
 # =============================================================================
+# Artifact Generation (for external provisioning systems)
+# =============================================================================
+.PHONY: artifacts artifacts-dir kubeconfig-agent
+
+ARTIFACTS_DIR ?= ./artifacts
+
+artifacts: artifacts-dir
+	@echo "Generating cloud-init artifacts..."
+	@KUBESOLO_FLAG=""; \
+	if [ "$(AUTO_INSTALL_KUBESOLO)" = "true" ]; then \
+		KUBESOLO_FLAG="--auto-install-kubesolo"; \
+	fi; \
+	./scripts/generate-cloud-init.sh \
+		--ssh-key "$(SSH_PUBLIC_KEY)" \
+		--hostname "$(VM_HOSTNAME)" \
+		--username "$(VM_USER)" \
+		--password "$(VM_PASSWORD)" \
+		--kubesolo-version "$(KUBESOLO_RELEASE)" \
+		--output-dir "$(ARTIFACTS_DIR)" \
+		--create-iso \
+		$$KUBESOLO_FLAG
+	@echo ""
+	@echo "Artifacts generated in $(ARTIFACTS_DIR)/"
+	@echo "Use these with your provisioning system."
+
+artifacts-dir:
+	@mkdir -p $(ARTIFACTS_DIR)
+
+# Retrieve kubeconfig via qemu-guest-agent (no network required)
+kubeconfig-agent:
+	@echo "Retrieving kubeconfig via qemu-guest-agent..."
+	@API_ADDR_FLAG=""; \
+	if [ -n "$(KUBECONFIG_API_ADDRESS)" ]; then \
+		API_ADDR_FLAG="--api-server $(KUBECONFIG_API_ADDRESS)"; \
+	fi; \
+	./scripts/get-kubeconfig.sh \
+		--vm-name "$(VM_NAME)" \
+		--method guest-agent \
+		--libvirt-uri "$(LIBVIRT_URI)" \
+		--output "$(KUBECONFIG_HOST_PATH)" \
+		--wait \
+		$$API_ADDR_FLAG
+
+# =============================================================================
 # Cleanup
 # =============================================================================
-.PHONY: clean clean-all
+.PHONY: clean clean-all clean-artifacts
 
 clean:
 	rm -rf $(IMAGE_DIR)/*.qcow2
 	rm -f cloud-init/cidata.iso
 
-clean-all: destroy clean
+clean-all: destroy clean clean-artifacts
 	@echo "All cleaned up."
+
+clean-artifacts:
+	rm -rf $(ARTIFACTS_DIR)
 
 # =============================================================================
 # Cloud-init files (create defaults if missing)

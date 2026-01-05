@@ -18,7 +18,11 @@ packages:
   - ip6tables
   - ca-certificates
   - cgroup-tools
+  - qemu-guest-agent
 
 runcmd:
   - rc-update add cgroups boot
   - rc-service cgroups start
+  # Enable qemu-guest-agent for hypervisor communication (no SSH required)
+  - rc-update add qemu-guest-agent default
+  - rc-service qemu-guest-agent start

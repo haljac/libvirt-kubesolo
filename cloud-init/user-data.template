@@ -1,0 +1,52 @@
+#cloud-config
+#
+# Kubesolo VM Cloud-Init Template
+#
+# This is a template file with placeholders. Use scripts/generate-cloud-init.sh
+# to generate the actual user-data file with your configuration.
+#
+# Placeholders:
+#   {{USERNAME}}     - VM username (default: alpine)
+#   {{PASSWORD}}     - VM password (default: alpine)
+#   {{SSH_KEY}}      - SSH public key
+#   {{HOSTNAME}}     - VM hostname (default: kubesolo)
+#
+# The generate-cloud-init.sh script handles:
+#   - Placeholder substitution
+#   - Optional Kubesolo auto-installation
+#   - qemu-guest-agent configuration
+#
+
+users:
+  - name: {{USERNAME}}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/ash
+    lock_passwd: false
+    plain_text_passwd: {{PASSWORD}}
+    ssh_authorized_keys:
+      - {{SSH_KEY}}
+
+ssh_pwauth: true
+
+hostname: {{HOSTNAME}}
+
+package_update: true
+packages:
+  - curl
+  - openssh
+  - iptables
+  - ip6tables
+  - ca-certificates
+  - cgroup-tools
+  - qemu-guest-agent
+
+runcmd:
+  # Enable cgroups (required for Kubernetes)
+  - rc-update add cgroups boot
+  - rc-service cgroups start
+  # Enable qemu-guest-agent (for hypervisor communication)
+  - rc-update add qemu-guest-agent default
+  - rc-service qemu-guest-agent start
+
+# Note: For auto-install Kubesolo, use generate-cloud-init.sh with --auto-install-kubesolo
+# This will add write_files and additional runcmd entries for Kubesolo setup.
