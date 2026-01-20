@@ -176,6 +176,8 @@ runcmd:
   - rc-service cgroups start
   - rc-update add qemu-guest-agent default
   - rc-service qemu-guest-agent start
+  # Add hostname to /etc/hosts for kubelet API access (needed for kubectl logs/exec)
+  - echo "127.0.0.1 \$(hostname)" >> /etc/hosts
 EOF
 
 # Add Kubesolo auto-install commands if enabled

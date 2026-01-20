@@ -58,6 +58,8 @@ runcmd:
   # Enable qemu-guest-agent for hypervisor communication (no SSH required)
   - rc-update add qemu-guest-agent default
   - rc-service qemu-guest-agent start
+  # Add hostname to /etc/hosts for kubelet API access (needed for kubectl logs/exec)
+  - echo "127.0.0.1 $(hostname)" >> /etc/hosts
   # Format and mount second disk directly at /var/lib/kubesolo
   - mkfs.ext4 -F /dev/vdb
   - mkdir -p /var/lib/kubesolo
