@@ -181,12 +181,14 @@ EOF
 # Add Kubesolo auto-install commands if enabled
 if [[ "$AUTO_INSTALL_KUBESOLO" == "true" ]]; then
     cat >> "$OUTPUT_DIR/user-data" << EOF
-  # Install Kubesolo ${KUBESOLO_VERSION}
-  - curl -sfL "https://github.com/portainer/kubesolo/releases/download/${KUBESOLO_VERSION}/kubesolo-linux-amd64.tar.gz" -o /tmp/kubesolo.tar.gz
-  - tar -xzf /tmp/kubesolo.tar.gz -C /tmp
-  - mv /tmp/kubesolo /usr/local/bin/
-  - chmod +x /usr/local/bin/kubesolo
-  - rm -f /tmp/kubesolo.tar.gz
+  # Install Kubesolo ${KUBESOLO_VERSION} (use musl variant for Alpine, symlink due to root partition size)
+  - mkdir -p /var/lib/kubesolo
+  - curl -sfL "https://github.com/portainer/kubesolo/releases/download/${KUBESOLO_VERSION}/kubesolo-${KUBESOLO_VERSION}-linux-amd64-musl.tar.gz" -o /var/lib/kubesolo/kubesolo.tar.gz
+  - tar -xzf /var/lib/kubesolo/kubesolo.tar.gz -C /var/lib/kubesolo
+  - chmod +x /var/lib/kubesolo/kubesolo
+  - rm -f /usr/local/bin/kubesolo
+  - ln -s /var/lib/kubesolo/kubesolo /usr/local/bin/kubesolo
+  - rm -f /var/lib/kubesolo/kubesolo.tar.gz
   # Setup and start Kubesolo service
   - /usr/local/bin/setup-kubesolo-service.sh
 EOF

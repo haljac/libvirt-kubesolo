@@ -33,7 +33,8 @@ VM_NAME        := kubesolo
 
 # Cloud image (qcow2 with cloud-init pre-installed)
 ALPINE_IMAGE   := generic_alpine-$(ALPINE_VERSION).$(ALPINE_RELEASE)-x86_64-bios-cloudinit-r0.qcow2
-ALPINE_URL     := https://dl-cdn.alpinelinux.org/alpine/v$(ALPINE_VERSION)/releases/cloud/$(ALPINE_IMAGE)
+# Using pre-resized 10GB image from GCS (original Alpine image is only ~200MB)
+ALPINE_URL     := https://storage.googleapis.com/demo-bucket-lfm/$(ALPINE_IMAGE)
 IMAGE_DIR      := alpine/images
 IMAGE_PATH     := $(IMAGE_DIR)/$(ALPINE_IMAGE)
 
@@ -108,8 +109,13 @@ help:
 	@echo "  make clean-artifacts - Remove generated artifacts"
 	@echo ""
 	@echo "Artifact Generation (for external provisioning):"
-	@echo "  make artifacts       - Generate cloud-init files for external use"
+	@echo "  make artifacts        - Generate cloud-init files for external use"
 	@echo "  make kubeconfig-agent - Get kubeconfig via qemu-guest-agent"
+	@echo ""
+	@echo "HyperCore Deployment (Scale Computing):"
+	@echo "  make hypercore-deploy     - Deploy VM to HyperCore cluster"
+	@echo "  make hypercore-kubeconfig - Retrieve kubeconfig from HyperCore VM"
+	@echo "    Requires: HYPERCORE_URL, HYPERCORE_USER, HYPERCORE_PASSWORD"
 	@echo ""
 	@echo "Versioning:"
 	@echo "  make version       - Show current versions"
@@ -478,6 +484,62 @@ kubeconfig-agent:
 		--output "$(KUBECONFIG_HOST_PATH)" \
 		--wait \
 		$$API_ADDR_FLAG
+
+# =============================================================================
+# HyperCore Deployment (Scale Computing)
+# =============================================================================
+.PHONY: hypercore-deploy hypercore-kubeconfig
+
+# HyperCore configuration (set via environment variables)
+HYPERCORE_URL      ?=
+HYPERCORE_USER     ?=
+HYPERCORE_PASSWORD ?=
+HYPERCORE_VM_NAME  ?= $(VM_NAME)
+HYPERCORE_KUBECONFIG_PATH := $(HOME)/.kube/kubesolo-hypercore
+
+hypercore-deploy:
+	@if [ -z "$(HYPERCORE_URL)" ]; then \
+		echo "ERROR: HYPERCORE_URL is required"; \
+		echo "Usage: HYPERCORE_URL=https://host HYPERCORE_USER=admin HYPERCORE_PASSWORD=admin make hypercore-deploy"; \
+		exit 1; \
+	fi
+	./scripts/deploy-hypercore.sh \
+		--url "$(HYPERCORE_URL)" \
+		--user "$(HYPERCORE_USER)" \
+		--password "$(HYPERCORE_PASSWORD)" \
+		--vm-name "$(HYPERCORE_VM_NAME)" \
+		--ssh-key "$(SSH_PUBLIC_KEY)"
+
+hypercore-kubeconfig:
+	@if [ -z "$(HYPERCORE_URL)" ]; then \
+		echo "ERROR: HYPERCORE_URL is required"; \
+		echo "Usage: HYPERCORE_URL=https://host HYPERCORE_USER=admin HYPERCORE_PASSWORD=admin make hypercore-kubeconfig"; \
+		exit 1; \
+	fi
+	@echo "Retrieving kubeconfig from HyperCore VM '$(HYPERCORE_VM_NAME)'..."
+	@VM_IP=$$(curl -sk -u "$(HYPERCORE_USER):$(HYPERCORE_PASSWORD)" \
+		"$(HYPERCORE_URL)/rest/v1/VirDomain" | \
+		python3 -c "import sys,json; data=json.load(sys.stdin); \
+		vm=[v for v in data if v.get('name')=='$(HYPERCORE_VM_NAME)']; \
+		ips=vm[0]['netDevs'][0].get('ipv4Addresses',[]) if vm else []; \
+		print(ips[0] if ips else '')" 2>/dev/null); \
+	if [ -z "$$VM_IP" ]; then \
+		echo "ERROR: Could not determine VM IP. Is the VM running?"; \
+		exit 1; \
+	fi; \
+	echo "VM IP: $$VM_IP"; \
+	mkdir -p $(HOME)/.kube; \
+	ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null $(SSH_USER)@$$VM_IP \
+		"doas cat $(KUBECONFIG_VM_PATH)" | \
+		sed "s|https://127.0.0.1:|https://$$VM_IP:|g" | \
+		sed "s|https://localhost:|https://$$VM_IP:|g" > $(HYPERCORE_KUBECONFIG_PATH); \
+	chmod 600 $(HYPERCORE_KUBECONFIG_PATH); \
+	echo ""; \
+	echo "Kubeconfig saved to: $(HYPERCORE_KUBECONFIG_PATH)"; \
+	echo ""; \
+	echo "To use kubectl from your host:"; \
+	echo "  export KUBECONFIG=$(HYPERCORE_KUBECONFIG_PATH)"; \
+	echo "  kubectl get nodes"
 
 # =============================================================================
 # Cleanup

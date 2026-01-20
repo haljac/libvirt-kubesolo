@@ -1,4 +1,12 @@
 #cloud-config
+
+# Grow root partition to fill disk
+growpart:
+  mode: auto
+  devices: ['/']
+
+resize_rootfs: true
+
 users:
   - name: alpine
     sudo: ALL=(ALL) NOPASSWD:ALL
@@ -6,7 +14,7 @@ users:
     lock_passwd: false
     plain_text_passwd: alpine
     ssh_authorized_keys:
-      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKSnzlkggGFkeYN+xVQLid/EXalZXg3mV93YRs5kCGl2 jackvincenthall@gmail.com
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEJkqKwtgOBLejv9fwEEZssL7HF6dfEu7LkZPSEwwine jhall@scalecomputing.com
 
 ssh_pwauth: true
 
@@ -20,9 +28,48 @@ packages:
   - cgroup-tools
   - qemu-guest-agent
 
+write_files:
+  - path: /etc/init.d/kubesolo
+    permissions: '0755'
+    content: |
+      #!/sbin/openrc-run
+
+      name="kubesolo"
+      description="KubeSolo - Ultra-lightweight Kubernetes"
+      command="/usr/local/bin/kubesolo"
+      command_background="yes"
+      pidfile="/run/${RC_SVCNAME}.pid"
+      output_log="/var/log/kubesolo.log"
+      error_log="/var/log/kubesolo.err"
+
+      depend() {
+          need net
+          need cgroups
+          after firewall
+      }
+
+      start_pre() {
+          checkpath --directory --owner root:root --mode 0755 /var/lib/kubesolo
+      }
+
 runcmd:
   - rc-update add cgroups boot
   - rc-service cgroups start
   # Enable qemu-guest-agent for hypervisor communication (no SSH required)
   - rc-update add qemu-guest-agent default
   - rc-service qemu-guest-agent start
+  # Format and mount second disk directly at /var/lib/kubesolo
+  - mkfs.ext4 -F /dev/vdb
+  - mkdir -p /var/lib/kubesolo
+  - mount /dev/vdb /var/lib/kubesolo
+  - echo '/dev/vdb /var/lib/kubesolo ext4 defaults 0 2' >> /etc/fstab
+  # Install Kubesolo binary (keep on data disk, symlink to /usr/local/bin due to root partition size)
+  - curl -L "https://github.com/portainer/kubesolo/releases/download/v1.1.0/kubesolo-v1.1.0-linux-amd64-musl.tar.gz" -o /var/lib/kubesolo/kubesolo.tar.gz
+  - tar -xzf /var/lib/kubesolo/kubesolo.tar.gz -C /var/lib/kubesolo
+  - chmod +x /var/lib/kubesolo/kubesolo
+  - rm -f /usr/local/bin/kubesolo
+  - ln -s /var/lib/kubesolo/kubesolo /usr/local/bin/kubesolo
+  - rm -f /var/lib/kubesolo/kubesolo.tar.gz
+  # Start Kubesolo service
+  - rc-update add kubesolo default
+  - rc-service kubesolo start
