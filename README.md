@@ -242,9 +242,13 @@ Deploy Kubesolo to a Scale Computing HyperCore cluster. This is a fully automate
 - A bare-metal HyperCore host (nested virtualization is not supported - cloud-init hangs)
 - The Alpine qcow2 image in `alpine/images/` (run `make download` if missing)
 
-### Full Deploy (one command)
+### Full Deploy
 
 ```bash
+# 1. Download the Alpine image (one-time)
+make download
+
+# 2. Deploy to HyperCore
 HYPERCORE_URL=https://<host> \
 HYPERCORE_USER=admin \
 HYPERCORE_PASSWORD=admin \
