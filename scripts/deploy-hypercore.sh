@@ -188,9 +188,24 @@ print(data.get('createdUUID', ''))
 " 2>/dev/null || true)
             if [[ -n "$VSD_UUID" ]]; then
                 echo "Uploaded VSD: $VSD_UUID"
-                # Wait for upload to complete
+                # Wait for upload to fully process
                 echo "Waiting for VSD to be ready..."
-                sleep 10
+                for vi in {1..30}; do
+                    VSD_STATE=$(api_call GET "/rest/v1/VirtualDisk/$VSD_UUID" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if isinstance(data, list) and data:
+    print(data[0].get('uuid', ''))
+elif isinstance(data, dict):
+    print(data.get('uuid', ''))
+" 2>/dev/null || true)
+                    if [[ -n "$VSD_STATE" ]]; then
+                        echo "VSD is ready"
+                        break
+                    fi
+                    echo "  Waiting for VSD... ($vi/30)"
+                    sleep 5
+                done
             else
                 echo "ERROR: Failed to upload VSD" >&2
                 echo "$UPLOAD_RESPONSE" >&2
@@ -302,21 +317,58 @@ fi
 
 echo "VM created: $VM_UUID"
 
-# Step 2: Start the VM
-echo "Starting VM..."
-# Use direct curl call to avoid quoting issues with JSON array
-curl -sk -X POST \
-    -u "${HYPERCORE_USER}:${HYPERCORE_PASSWORD}" \
-    -H "Content-Type: application/json" \
-    -d "[{\"virDomainUUID\": \"${VM_UUID}\", \"actionType\": \"START\"}]" \
-    "${HYPERCORE_URL}/rest/v1/VirDomain/action" > /dev/null
+# Wait for creation task to complete before starting
+echo "Waiting for VM creation to finalize..."
+for i in {1..15}; do
+    VM_STATE=$(api_call GET "/rest/v1/VirDomain/${VM_UUID}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if data:
+    print(data[0].get('state', 'UNKNOWN'))
+" 2>/dev/null || echo "UNKNOWN")
+    if [[ "$VM_STATE" == "SHUTOFF" ]]; then
+        echo "VM is ready to start (state: SHUTOFF)"
+        break
+    fi
+    echo "  State: $VM_STATE (waiting for creation...)"
+    sleep 2
+done
 
-echo "VM start initiated..."
+# Step 2: Start the VM (with retry)
+echo "Starting VM..."
+TASK_TAG=""
+for attempt in {1..5}; do
+    START_RESPONSE=$(curl -sk -X POST \
+        -u "${HYPERCORE_USER}:${HYPERCORE_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "[{\"virDomainUUID\": \"${VM_UUID}\", \"actionType\": \"START\"}]" \
+        "${HYPERCORE_URL}/rest/v1/VirDomain/action")
+
+    TASK_TAG=$(echo "$START_RESPONSE" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('taskTag', ''))
+" 2>/dev/null || true)
+
+    if [[ -n "$TASK_TAG" ]]; then
+        echo "Start task issued (taskTag: $TASK_TAG)"
+        break
+    fi
+    echo "  Start attempt $attempt failed, retrying in 5s..."
+    sleep 5
+done
+
+if [[ -z "$TASK_TAG" ]]; then
+    echo "ERROR: Failed to start VM after 5 attempts" >&2
+    echo "Last response: $START_RESPONSE" >&2
+    exit 1
+fi
 
 # Wait for VM to be running
 echo "Waiting for VM to start..."
+VM_STARTED=false
 for i in {1..30}; do
-    sleep 2
+    sleep 3
     VM_STATE=$(api_call GET "/rest/v1/VirDomain/${VM_UUID}" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
@@ -326,10 +378,16 @@ if data:
 
     if [[ "$VM_STATE" == "RUNNING" ]]; then
         echo "VM is running!"
+        VM_STARTED=true
         break
     fi
     echo "  State: $VM_STATE (waiting...)"
 done
+
+if [[ "$VM_STARTED" != "true" ]]; then
+    echo "ERROR: Timed out waiting for VM to reach RUNNING state (last state: $VM_STATE)" >&2
+    exit 1
+fi
 
 # Step 3: Wait for VM to get an IP address
 echo "Waiting for VM IP address..."
@@ -402,7 +460,18 @@ echo "Retrieving kubeconfig..."
     --ssh-user "$SSH_USER" \
     --output "$KUBECONFIG_HOST_PATH"
 
-# Step 8: Deploy netcat-probe pod
+# Step 8: Wait for Kubernetes to be fully initialized (default service account)
+echo "Waiting for Kubernetes to be fully initialized..."
+for i in {1..30}; do
+    if KUBECONFIG="$KUBECONFIG_HOST_PATH" kubectl get serviceaccount default -n default &>/dev/null; then
+        echo "Kubernetes is ready!"
+        break
+    fi
+    echo "  Waiting for default service account... ($i/30)"
+    sleep 5
+done
+
+# Step 9: Deploy netcat-probe pod
 echo "Deploying netcat-probe pod..."
 KUBECONFIG="$KUBECONFIG_HOST_PATH" kubectl apply -f - <<'PROBE_EOF'
 apiVersion: v1

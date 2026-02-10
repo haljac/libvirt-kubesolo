@@ -168,9 +168,9 @@ KUBESOLO_RELEASE=v1.1.0    # Kubesolo version
 Defaults can be changed in the `VERSION` file:
 
 ```bash
-VM_MEMORY=512       # RAM in MB
+VM_MEMORY=1024      # RAM in MB
 VM_CPUS=2           # Virtual CPUs
-BOOT_DISK_SIZE=8G   # Disk size
+BOOT_DISK_SIZE=8G   # Disk size (libvirt only)
 ```
 
 ## Updating
@@ -234,6 +234,73 @@ Common issues:
 
 Note: Alpine uses `doas` instead of `sudo`.
 
+## HyperCore Deployment (Scale Computing)
+
+Deploy Kubesolo to a Scale Computing HyperCore cluster. This is a fully automated, single-command deployment that handles VSD upload, VM creation, Kubesolo installation, kubeconfig retrieval, and probe pod deployment.
+
+**Requirements:**
+- A bare-metal HyperCore host (nested virtualization is not supported - cloud-init hangs)
+- The Alpine qcow2 image in `alpine/images/` (run `make download` if missing)
+
+### Full Deploy (one command)
+
+```bash
+HYPERCORE_URL=https://<host> \
+HYPERCORE_USER=admin \
+HYPERCORE_PASSWORD=admin \
+make hypercore-deploy
+```
+
+This will:
+1. Upload the Alpine image to HyperCore (if no VSD exists)
+2. Create a VM with two disks (Alpine boot + 10GB data disk)
+3. Start the VM and wait for it to boot
+4. Wait for cloud-init to install and start Kubesolo
+5. Retrieve the kubeconfig to `~/.kube/kubesolo-hypercore`
+6. Deploy a netcat-probe pod that monitors ports 16001, 10001, 10002
+
+### Post-Deploy Commands
+
+```bash
+# Check status
+HYPERCORE_URL=https://<host> HYPERCORE_USER=admin HYPERCORE_PASSWORD=admin make hypercore-status
+
+# View probe logs
+make hypercore-logs
+
+# Re-fetch kubeconfig (if IP changes)
+HYPERCORE_URL=https://<host> HYPERCORE_USER=admin HYPERCORE_PASSWORD=admin make hypercore-kubeconfig
+
+# Use kubectl directly
+export KUBECONFIG=~/.kube/kubesolo-hypercore
+kubectl get nodes
+kubectl logs netcat-probe -f
+```
+
+### SSH Access
+
+```bash
+ssh alpine@<vm-ip>  # password: alpine
+```
+
+### HyperCore Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HYPERCORE_URL` | (required) | HyperCore API URL (e.g. `https://10.100.26.12`) |
+| `HYPERCORE_USER` | (required) | HyperCore API username |
+| `HYPERCORE_PASSWORD` | (required) | HyperCore API password |
+| `HYPERCORE_VM_NAME` | `kubesolo` | VM name on HyperCore |
+
+### HyperCore Commands
+
+| Command | Description |
+|---------|-------------|
+| `make hypercore-deploy` | Full deploy: upload + VM + Kubesolo + kubeconfig + probe |
+| `make hypercore-kubeconfig` | Retrieve kubeconfig from running VM |
+| `make hypercore-status` | Check VM, node, and probe status |
+| `make hypercore-logs` | View netcat-probe logs |
+
 ## Integration with External Provisioning Systems
 
 This project can generate artifacts for external provisioning systems (libvirt wrappers, Terraform, etc.).
@@ -295,6 +362,7 @@ See [docs/integration.md](docs/integration.md) for full integration documentatio
 │   ├── user-data.template # Template for artifact generation
 │   └── meta-data         # Cloud-init instance metadata
 ├── scripts/
+│   ├── deploy-hypercore.sh     # Full HyperCore deployment automation
 │   ├── generate-cloud-init.sh  # Standalone cloud-init generator
 │   └── get-kubeconfig.sh       # Standalone kubeconfig retrieval
 └── docs/
