@@ -49,8 +49,10 @@ SSH_KEY="${SSH_PUBLIC_KEY:-}"
 CLOUD_INIT_DIR="$PROJECT_ROOT/cloud-init"
 
 # VM specs (from VERSION file or default)
-VM_MEMORY="${VM_MEMORY:-512}"
+VM_MEMORY="${VM_MEMORY:-1024}"
 VM_CPUS="${VM_CPUS:-2}"
+SSH_USER="alpine"
+KUBECONFIG_HOST_PATH="${HOME}/.kube/kubesolo-hypercore"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -167,8 +169,38 @@ if data:
     fi
 
     if [[ -z "$VSD_UUID" ]]; then
-        echo "ERROR: No virtual disks found. Please upload the Alpine image first." >&2
-        exit 1
+        # Try to upload the image automatically
+        ALPINE_IMAGE="$PROJECT_ROOT/alpine/images/generic_alpine-${ALPINE_VERSION:-3.21}.${ALPINE_RELEASE:-5}-x86_64-bios-cloudinit-r0.qcow2"
+        if [[ -f "$ALPINE_IMAGE" ]]; then
+            FILENAME=$(basename "$ALPINE_IMAGE")
+            FILESIZE=$(stat -f%z "$ALPINE_IMAGE" 2>/dev/null || stat -c%s "$ALPINE_IMAGE" 2>/dev/null)
+            echo "No VSD found. Uploading $FILENAME ($FILESIZE bytes)..."
+            UPLOAD_RESPONSE=$(curl -sk -X PUT \
+                -u "${HYPERCORE_USER}:${HYPERCORE_PASSWORD}" \
+                -H "Content-Type: application/octet-stream" \
+                -H "Content-Length: ${FILESIZE}" \
+                --data-binary "@${ALPINE_IMAGE}" \
+                "${HYPERCORE_URL}/rest/v1/VirtualDisk/upload?filename=${FILENAME}&filesize=${FILESIZE}")
+            VSD_UUID=$(echo "$UPLOAD_RESPONSE" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('createdUUID', ''))
+" 2>/dev/null || true)
+            if [[ -n "$VSD_UUID" ]]; then
+                echo "Uploaded VSD: $VSD_UUID"
+                # Wait for upload to complete
+                echo "Waiting for VSD to be ready..."
+                sleep 10
+            else
+                echo "ERROR: Failed to upload VSD" >&2
+                echo "$UPLOAD_RESPONSE" >&2
+                exit 1
+            fi
+        else
+            echo "ERROR: No virtual disks found and no local image at $ALPINE_IMAGE" >&2
+            echo "Either upload the Alpine image to HyperCore or run 'make download' first." >&2
+            exit 1
+        fi
     fi
 
     VSD_NAME=$(echo "$VSD_RESPONSE" | python3 -c "
@@ -299,26 +331,141 @@ if data:
     echo "  State: $VM_STATE (waiting...)"
 done
 
-# Get final VM info
-echo ""
-echo "=========================================="
-echo "VM deployment complete!"
-echo "=========================================="
-echo ""
-VM_INFO=$(api_call GET "/rest/v1/VirDomain/${VM_UUID}")
-echo "$VM_INFO" | python3 -c "
+# Step 3: Wait for VM to get an IP address
+echo "Waiting for VM IP address..."
+VM_IP=""
+for i in {1..60}; do
+    VM_IP=$(api_call GET "/rest/v1/VirDomain/${VM_UUID}" | python3 -c "
 import sys, json
-data = json.load(sys.stdin)[0]
-print('VM UUID:', data['uuid'])
-print('Name:', data['name'])
-print('State:', data['state'])
-ips = data['netDevs'][0].get('ipv4Addresses', [])
-if ips:
-    print('IP Address:', ips[0])
-else:
-    print('IP Address: (pending - check again shortly)')
-"
+data = json.load(sys.stdin)
+if data:
+    ips = data[0].get('netDevs', [{}])[0].get('ipv4Addresses', [])
+    if ips: print(ips[0])
+" 2>/dev/null || true)
+
+    if [[ -n "$VM_IP" ]]; then
+        echo "VM IP: $VM_IP"
+        break
+    fi
+    echo "  Waiting for IP... ($i/60)"
+    sleep 5
+done
+
+if [[ -z "$VM_IP" ]]; then
+    echo "ERROR: Timed out waiting for VM IP address" >&2
+    exit 1
+fi
+
+# Step 4: Wait for SSH to be available
+echo "Waiting for SSH access..."
+for i in {1..30}; do
+    if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o LogLevel=ERROR \
+        "${SSH_USER}@${VM_IP}" "echo ok" &>/dev/null; then
+        echo "SSH is ready!"
+        break
+    fi
+    echo "  Waiting for SSH... ($i/30)"
+    sleep 5
+done
+
+# Helper for running commands on the VM
+vm_ssh() {
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        "${SSH_USER}@${VM_IP}" "$@"
+}
+
+# Step 5: Wait for cloud-init and kubesolo to finish
+echo "Waiting for Kubesolo to be ready..."
+for i in {1..60}; do
+    if vm_ssh "test -f /var/lib/kubesolo/pki/admin/admin.kubeconfig" &>/dev/null; then
+        echo "Kubesolo is ready!"
+        break
+    fi
+    echo "  Waiting for Kubesolo... ($i/60)"
+    sleep 5
+done
+
+if ! vm_ssh "test -f /var/lib/kubesolo/pki/admin/admin.kubeconfig" &>/dev/null; then
+    echo "ERROR: Timed out waiting for Kubesolo to start" >&2
+    exit 1
+fi
+
+# Step 6: Fix /etc/hosts for kubelet hostname resolution (needed for kubectl logs/exec)
+echo "Configuring hostname resolution..."
+vm_ssh 'grep -q "$(hostname)" /etc/hosts || echo "127.0.0.1 $(hostname)" | doas tee -a /etc/hosts > /dev/null'
+
+# Step 7: Retrieve kubeconfig
+echo "Retrieving kubeconfig..."
+"$SCRIPT_DIR/get-kubeconfig.sh" \
+    --method ssh \
+    --vm-ip "$VM_IP" \
+    --ssh-user "$SSH_USER" \
+    --output "$KUBECONFIG_HOST_PATH"
+
+# Step 8: Deploy netcat-probe pod
+echo "Deploying netcat-probe pod..."
+KUBECONFIG="$KUBECONFIG_HOST_PATH" kubectl apply -f - <<'PROBE_EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: netcat-probe
+  labels:
+    app: netcat-probe
+spec:
+  hostNetwork: true
+  containers:
+  - name: probe
+    image: busybox:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      while true; do
+        echo "=== $(date -Iseconds) ==="
+        for port in 16001 10001 10002; do
+          if nc -z -w 2 localhost $port 2>/dev/null; then
+            echo "localhost:$port - OPEN"
+          else
+            echo "localhost:$port - CLOSED"
+          fi
+        done
+        echo ""
+        sleep 10
+      done
+    resources:
+      limits:
+        memory: "32Mi"
+        cpu: "50m"
+  restartPolicy: Always
+PROBE_EOF
+
+# Wait for probe pod to be running
+echo "Waiting for netcat-probe pod..."
+for i in {1..12}; do
+    POD_STATUS=$(KUBECONFIG="$KUBECONFIG_HOST_PATH" kubectl get pod netcat-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$POD_STATUS" == "Running" ]]; then
+        echo "netcat-probe is running!"
+        break
+    fi
+    sleep 5
+done
+
+# Final summary
 echo ""
-echo "To check VM status:"
-echo "  curl -sk -u ${HYPERCORE_USER}:*** ${HYPERCORE_URL}/rest/v1/VirDomain/${VM_UUID}"
+echo "=========================================="
+echo "Deployment complete!"
+echo "=========================================="
+echo ""
+echo "  VM UUID:    $VM_UUID"
+echo "  VM Name:    $VM_NAME"
+echo "  VM IP:      $VM_IP"
+echo "  Kubeconfig: $KUBECONFIG_HOST_PATH"
+echo ""
+echo "Commands:"
+echo "  export KUBECONFIG=$KUBECONFIG_HOST_PATH"
+echo "  kubectl get nodes"
+echo "  kubectl logs netcat-probe -f"
+echo ""
+echo "SSH access:"
+echo "  ssh ${SSH_USER}@${VM_IP}  (password: alpine)"
 echo ""

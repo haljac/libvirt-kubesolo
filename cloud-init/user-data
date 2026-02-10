@@ -26,6 +26,7 @@ packages:
   - ip6tables
   - ca-certificates
   - cgroup-tools
+  - nftables
   - qemu-guest-agent
 
 write_files:

@@ -113,9 +113,12 @@ help:
 	@echo "  make kubeconfig-agent - Get kubeconfig via qemu-guest-agent"
 	@echo ""
 	@echo "HyperCore Deployment (Scale Computing):"
-	@echo "  make hypercore-deploy     - Deploy VM to HyperCore cluster"
+	@echo "  make hypercore-deploy     - Full deploy: VM + Kubesolo + kubeconfig + probe"
 	@echo "  make hypercore-kubeconfig - Retrieve kubeconfig from HyperCore VM"
+	@echo "  make hypercore-status     - Check VM and probe status"
+	@echo "  make hypercore-logs       - View netcat-probe logs"
 	@echo "    Requires: HYPERCORE_URL, HYPERCORE_USER, HYPERCORE_PASSWORD"
+	@echo "    Alpine VSD must be uploaded to HyperCore before deploying"
 	@echo ""
 	@echo "Versioning:"
 	@echo "  make version       - Show current versions"
@@ -488,7 +491,7 @@ kubeconfig-agent:
 # =============================================================================
 # HyperCore Deployment (Scale Computing)
 # =============================================================================
-.PHONY: hypercore-deploy hypercore-kubeconfig
+.PHONY: hypercore-deploy hypercore-kubeconfig hypercore-status hypercore-logs
 
 # HyperCore configuration (set via environment variables)
 HYPERCORE_URL      ?=
@@ -540,6 +543,29 @@ hypercore-kubeconfig:
 	echo "To use kubectl from your host:"; \
 	echo "  export KUBECONFIG=$(HYPERCORE_KUBECONFIG_PATH)"; \
 	echo "  kubectl get nodes"
+
+hypercore-status:
+	@if [ -z "$(HYPERCORE_URL)" ]; then \
+		echo "ERROR: HYPERCORE_URL is required"; \
+		exit 1; \
+	fi
+	@echo "=== VM Status ==="
+	@curl -sk -u "$(HYPERCORE_USER):$(HYPERCORE_PASSWORD)" \
+		"$(HYPERCORE_URL)/rest/v1/VirDomain" | \
+		python3 -c "import sys,json; data=json.load(sys.stdin); \
+		vm=[v for v in data if v.get('name')=='$(HYPERCORE_VM_NAME)']; \
+		v=vm[0] if vm else None; \
+		print('Not found') if not v else print(f\"State: {v['state']}\nIP: {v['netDevs'][0].get('ipv4Addresses',['pending'])[0]}\")" 2>/dev/null
+	@echo ""
+	@echo "=== Kubernetes Node ==="
+	@KUBECONFIG=$(HYPERCORE_KUBECONFIG_PATH) kubectl get nodes 2>/dev/null || echo "Cannot reach cluster (run make hypercore-kubeconfig first)"
+	@echo ""
+	@echo "=== Probe Pod ==="
+	@KUBECONFIG=$(HYPERCORE_KUBECONFIG_PATH) kubectl get pod netcat-probe 2>/dev/null || echo "Probe pod not found"
+
+hypercore-logs:
+	@KUBECONFIG=$(HYPERCORE_KUBECONFIG_PATH) kubectl logs netcat-probe --tail=20 2>/dev/null || \
+		echo "Cannot get logs (run make hypercore-kubeconfig first)"
 
 # =============================================================================
 # Cleanup
